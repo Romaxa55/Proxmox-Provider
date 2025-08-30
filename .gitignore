@@ -1,0 +1,38 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+terraform.tfplan
+terraform.tfplan.*
+
+# Ansible
+ansible/group_vars/all/vault.yml
+ansible/host_vars/*/vault.yml
+*.retry
+
+# SSH Keys
+*.pem
+*.key
+id_rsa*
+*.pub
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets
+secrets/
+.env
+.env.local

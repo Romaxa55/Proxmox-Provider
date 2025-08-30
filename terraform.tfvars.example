@@ -1,0 +1,25 @@
+# Proxmox Configuration
+proxmox_api_url         = "https://pve.example.com:8006/api2/json"
+proxmox_user            = "terraform@pve!terraform"
+proxmox_password        = ""  # Leave empty when using API token
+proxmox_api_token_id    = "terraform@pve!terraform"
+proxmox_api_token_secret = "your-api-token-secret-here"
+proxmox_node            = "pve"
+backup_proxmox_node     = "pve-backup"
+
+# Template Configuration
+ubuntu_template      = "ubuntu-22.04-cloudinit"
+
+# Storage Configuration
+ssd_storage         = "local-ssd"
+hdd_storage         = "local-hdd"
+
+# VM Configuration
+vm_user             = "ubuntu"
+vm_password         = "ubuntu123"
+# ssh_public_key will be auto-loaded from ~/.ssh/id_rsa.pub
+
+# Kubernetes Configuration
+k8s_version         = "1.28.0"
+pod_subnet          = "10.244.0.0/16"
+service_subnet      = "10.96.0.0/12"
