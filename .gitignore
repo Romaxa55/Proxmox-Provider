@@ -36,3 +36,6 @@ Thumbs.db
 secrets/
 .env
 .env.local
+
+# Kubespray (external git repo)
+kubespray/

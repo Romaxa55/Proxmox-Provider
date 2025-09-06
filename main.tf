@@ -2,6 +2,7 @@
 resource "proxmox_virtual_environment_vm" "k8s_worker_extra" {
   name      = "k8s-worker-3"
   node_name = var.proxmox_node
+  vm_id     = local.vm_id_worker_extra
 
 
   cpu {
@@ -19,8 +20,10 @@ resource "proxmox_virtual_environment_vm" "k8s_worker_extra" {
   }
 
   network_device {
-    bridge = "vmbr0"
-    model  = "virtio"
+    bridge   = local.network_bridge
+    model    = local.network_model
+    vlan_id  = local.network_vlan_tag
+    firewall = local.network_firewall
   }
 
   disk {
@@ -48,14 +51,21 @@ resource "proxmox_virtual_environment_vm" "k8s_worker_extra" {
 
     ip_config {
       ipv4 {
-        address = "${local.worker_ips[2]}/16"
-        gateway = "10.0.0.1"
+        address = "${local.worker_ips[2]}/${local.network_ipv4_prefix}"
+        gateway = local.network_gateway_ipv4
       }
     }
   }
 
   agent {
     enabled = true
+    type    = "virtio"
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      initialization[0].user_account[0].keys
+    ]
   }
 }
 
@@ -80,6 +90,18 @@ provider "proxmox" {
   }
 }
 
+# Hardware mapping for NVIDIA GPU (requires root on Proxmox)
+resource "proxmox_virtual_environment_hardware_mapping_pci" "gpu0" {
+  name = "gpu0"
+  map = [{
+    id    = var.gpu_vendor_device_id
+    node  = var.proxmox_node
+    path  = var.gpu_pci_device
+    iommu_group = var.gpu_iommu_group
+    subsystem_id = var.gpu_subsystem_id != "" ? var.gpu_subsystem_id : null
+  }]
+}
+
 resource "proxmox_virtual_environment_file" "cloudinit_user_data" {
   node_name    = var.proxmox_node
   datastore_id = "local"
@@ -99,6 +121,7 @@ resource "proxmox_virtual_environment_vm" "k8s_control_plane" {
   count     = 3
   name      = "k8s-control-${count.index + 1}"
   node_name = var.proxmox_node
+  vm_id     = local.vm_id_control_base + count.index
 
 
   # VM Configuration
@@ -108,7 +131,7 @@ resource "proxmox_virtual_environment_vm" "k8s_control_plane" {
   }
   
   memory {
-    dedicated = 8192
+    dedicated = 24576
   }
   
   # Boot from cloud-init template
@@ -119,15 +142,17 @@ resource "proxmox_virtual_environment_vm" "k8s_control_plane" {
   
   # Network
   network_device {
-    bridge = "vmbr0"
-    model  = "virtio"
+    bridge   = local.network_bridge
+    model    = local.network_model
+    vlan_id  = local.network_vlan_tag
+    firewall = local.network_firewall
   }
   
   # System disk (NVMe - fastest)
   disk {
     datastore_id = var.ssd_storage
     interface    = "scsi0"
-    size         = 30
+    size         = 100
     file_format  = "raw"
     ssd          = true
     discard      = "on"
@@ -150,8 +175,8 @@ resource "proxmox_virtual_environment_vm" "k8s_control_plane" {
     
     ip_config {
       ipv4 {
-        address = "10.0.0.${240 + count.index}/16"
-        gateway = "10.0.0.1"
+        address = "${local.network_base_ipv4}.${240 + count.index}/${local.network_ipv4_prefix}"
+        gateway = local.network_gateway_ipv4
       }
     }
   }
@@ -159,6 +184,13 @@ resource "proxmox_virtual_environment_vm" "k8s_control_plane" {
   # Wait for cloud-init
   agent {
     enabled = true
+    type    = "virtio"
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      initialization[0].user_account[0].keys
+    ]
   }
 }
 
@@ -167,6 +199,7 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
   count     = 2
   name      = "k8s-worker-${count.index + 1}"
   node_name = var.proxmox_node
+  vm_id     = local.vm_id_worker_base + count.index
 
 
   # VM Configuration
@@ -187,8 +220,10 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
   
   # Network
   network_device {
-    bridge = "vmbr0"
-    model  = "virtio"
+    bridge   = local.network_bridge
+    model    = local.network_model
+    vlan_id  = local.network_vlan_tag
+    firewall = local.network_firewall
   }
   
   # System disk (NVMe - fastest)
@@ -201,15 +236,7 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
     discard      = "on"
   }
 
-  # Add 1.5TB HDD for video (Frigate/Longhorn)
-  disk {
-    datastore_id = var.hdd_storage
-    interface    = "scsi1"
-    size         = count.index == 0 ? 2000 : 1500
-    file_format  = "raw"
-    ssd          = false
-    discard      = "on"
-  }
+  # Workers now SSD-only (no additional HDD)
   
   # Cloud-init
   operating_system {
@@ -228,8 +255,8 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
     
     ip_config {
       ipv4 {
-        address = "${local.worker_ips[count.index]}/16"
-        gateway = "10.0.0.1"
+        address = "${local.worker_ips[count.index]}/${local.network_ipv4_prefix}"
+        gateway = local.network_gateway_ipv4
       }
     }
   }
@@ -237,147 +264,22 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
   # Wait for cloud-init
   agent {
     enabled = true
+    type    = "virtio"
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      initialization[0].user_account[0].keys
+    ]
   }
 }
 
-# Backup Node
-resource "proxmox_virtual_environment_vm" "k8s_backup" {
-  name      = "k8s-backup"
-  node_name = var.backup_proxmox_node
-
-
-  # VM Configuration
-  cpu {
-    cores = 4
-    type  = "host"
-  }
-  
-  memory {
-    dedicated = 16384
-  }
-  
-  # Boot from cloud-init template
-  clone {
-    vm_id = var.ubuntu_template_id
-    full  = true
-  }
-  
-  # Network
-  network_device {
-    bridge = "vmbr0"
-    model  = "virtio"
-  }
-  
-  # System disk (NVMe - fastest)
-  disk {
-    datastore_id = var.nvme_storage
-    interface    = "scsi0"
-    size         = 30
-    file_format  = "raw"
-    ssd          = true
-    discard      = "on"
-  }
-  
-  # Cloud-init
-  operating_system {
-    type = "l26"
-  }
-  
-  initialization {
-    datastore_id      = "local-zfs"
-    user_data_file_id = proxmox_virtual_environment_file.cloudinit_user_data.id
-    
-    user_account {
-      username = var.vm_user
-      password = var.vm_password
-      keys     = [local.ssh_public_key]
-    }
-    
-    ip_config {
-      ipv4 {
-        address = "10.0.0.245/16"
-        gateway = "10.0.0.1"
-      }
-    }
-  }
-  
-  # Wait for cloud-init
-  agent {
-    enabled = true
-  }
-}
-
-# Load Balancer for K8s API
-resource "proxmox_virtual_environment_vm" "k8s_lb" {
-  name      = "k8s-lb"
-  node_name = var.proxmox_node
-
-
-  # VM Configuration
-  cpu {
-    cores = 2
-    type  = "host"
-  }
-  
-  memory {
-    dedicated = 4096
-  }
-  
-  # Boot from cloud-init template
-  clone {
-    vm_id = var.ubuntu_template_id
-    full  = true
-  }
-  
-  # Network
-  network_device {
-    bridge = "vmbr0"
-    model  = "virtio"
-  }
-  
-  # System disk (NVMe - fastest)
-  disk {
-    datastore_id = var.ssd_storage
-    interface    = "scsi0"
-    size         = 50
-    file_format  = "raw"
-    ssd          = true
-    discard      = "on"
-  }
-  
-  # Cloud-init
-  operating_system {
-    type = "l26"
-  }
-  
-  initialization {
-    datastore_id      = "local-zfs"
-    user_data_file_id = proxmox_virtual_environment_file.cloudinit_user_data.id
-    
-    user_account {
-      username = var.vm_user
-      password = var.vm_password
-      keys     = [local.ssh_public_key]
-    }
-    
-    ip_config {
-      ipv4 {
-        address = "10.0.0.250/16"
-        gateway = "10.0.0.1"
-      }
-    }
-  }
-  
-  # Wait for cloud-init
-  agent {
-    enabled = true
-  }
-}
 
 # Ingress Node (dedicated)
 resource "proxmox_virtual_environment_vm" "k8s_ingress" {
   name      = "k8s-ingress-1"
   node_name = var.proxmox_node
+  vm_id     = local.vm_id_ingress_1
 
 
   cpu {
@@ -395,14 +297,16 @@ resource "proxmox_virtual_environment_vm" "k8s_ingress" {
   }
 
   network_device {
-    bridge = "vmbr0"
-    model  = "virtio"
+    bridge   = local.network_bridge
+    model    = local.network_model
+    vlan_id  = local.network_vlan_tag
+    firewall = local.network_firewall
   }
 
   disk {
     datastore_id = var.ssd_storage
     interface    = "scsi0"
-    size         = 50
+    size         = 100
     file_format  = "raw"
     ssd          = true
     discard      = "on"
@@ -424,14 +328,183 @@ resource "proxmox_virtual_environment_vm" "k8s_ingress" {
 
     ip_config {
       ipv4 {
-        address = "10.0.0.247/16"
-        gateway = "10.0.0.1"
+        address = "${local.network_base_ipv4}.247/${local.network_ipv4_prefix}"
+        gateway = local.network_gateway_ipv4
       }
     }
   }
 
   agent {
     enabled = true
+    type    = "virtio"
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      initialization[0].user_account[0].keys
+    ]
+  }
+}
+
+# Ingress Node 2 (dedicated)
+resource "proxmox_virtual_environment_vm" "k8s_ingress_2" {
+  name      = "k8s-ingress-2"
+  node_name = var.proxmox_node
+  vm_id     = local.vm_id_ingress_2
+
+
+  cpu {
+    cores = 4
+    type  = "host"
+  }
+
+  memory {
+    dedicated = 8192
+  }
+
+  clone {
+    vm_id = var.ubuntu_template_id
+    full  = true
+  }
+
+  network_device {
+    bridge   = local.network_bridge
+    model    = local.network_model
+    vlan_id  = local.network_vlan_tag
+    firewall = local.network_firewall
+  }
+
+  disk {
+    datastore_id = var.ssd_storage
+    interface    = "scsi0"
+    size         = 100
+    file_format  = "raw"
+    ssd          = true
+    discard      = "on"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  initialization {
+    datastore_id      = "local-zfs"
+    user_data_file_id = proxmox_virtual_environment_file.cloudinit_user_data.id
+
+    user_account {
+      username = var.vm_user
+      password = var.vm_password
+      keys     = [local.ssh_public_key]
+    }
+
+    ip_config {
+      ipv4 {
+        address = "${local.network_base_ipv4}.248/${local.network_ipv4_prefix}"
+        gateway = local.network_gateway_ipv4
+      }
+    }
+  }
+
+  agent {
+    enabled = true
+    type    = "virtio"
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      initialization[0].user_account[0].keys
+    ]
+  }
+}
+
+# GPU Node (dedicated with HDD for Longhorn and NVIDIA PCI passthrough)
+resource "proxmox_virtual_environment_vm" "k8s_gpu" {
+  name      = "k8s-gpu-1"
+  node_name = var.proxmox_node
+  vm_id     = local.vm_id_gpu_node
+  machine   = "q35"
+
+  cpu {
+    cores = 16
+    type  = "host"
+  }
+
+  memory {
+    dedicated = 65536
+  }
+
+  clone {
+    vm_id = var.ubuntu_template_id
+    full  = true
+  }
+
+  network_device {
+    bridge   = local.network_bridge
+    model    = local.network_model
+    vlan_id  = local.network_vlan_tag
+    firewall = local.network_firewall
+  }
+
+  # System disk on SSD
+  disk {
+    datastore_id = var.ssd_storage
+    interface    = "scsi0"
+    size         = 200
+    file_format  = "raw"
+    ssd          = true
+    discard      = "on"
+  }
+
+  # Additional HDD for Longhorn storage
+  disk {
+    datastore_id = var.hdd_storage
+    interface    = "scsi1"
+    size         = 3700
+    file_format  = "raw"
+    ssd          = false
+    discard      = "on"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  initialization {
+    datastore_id      = "local-zfs"
+    user_data_file_id = proxmox_virtual_environment_file.cloudinit_user_data.id
+
+    user_account {
+      username = var.vm_user
+      password = var.vm_password
+      keys     = [local.ssh_public_key]
+    }
+
+    ip_config {
+      ipv4 {
+        address = "${local.gpu_ip}/${local.network_ipv4_prefix}"
+        gateway = local.network_gateway_ipv4
+      }
+    }
+  }
+
+  # NVIDIA GPU passthrough
+  hostpci {
+    device  = "hostpci0"
+    mapping = proxmox_virtual_environment_hardware_mapping_pci.gpu0.name
+    pcie    = true
+    rombar  = false
+    xvga    = false
+  }
+
+  agent {
+    enabled = true
+    type    = "virtio"
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      initialization[0].user_account[0].keys
+    ]
   }
 }
 

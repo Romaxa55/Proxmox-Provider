@@ -34,16 +34,19 @@ ansible-playbook -i inventory.ini k8s-cluster.yml
 echo "✅ Kubernetes cluster deployed successfully!"
 echo ""
 echo "📊 Cluster Information:"
-echo "API Endpoint: https://10.0.0.246:6443"
-echo "Control Plane Nodes: 10.0.0.240-242"
-echo "Worker Nodes: 10.0.0.243-244"
-echo "Backup Node: 10.0.0.245"
-echo "Load Balancer: 10.0.0.246"
-echo "External Machine: 10.0.0.254 (manual setup required)"
+API_ENDPOINT=$(terraform output -raw k8s_api_endpoint 2>/dev/null || echo "https://172.16.100.246:6443")
+BASE_IP_PREFIX=${API_ENDPOINT#https://}
+BASE_IP_PREFIX=${BASE_IP_PREFIX%:*}
+BASE_IP_PREFIX=${BASE_IP_PREFIX%.*}
+echo "API Endpoint: ${API_ENDPOINT}"
+echo "Control Plane Nodes: ${BASE_IP_PREFIX}.240-242"
+echo "Worker Nodes: ${BASE_IP_PREFIX}.243-244"
+echo "Ingress Nodes: ${BASE_IP_PREFIX}.247, ${BASE_IP_PREFIX}.248"
+echo "External Machine: ${BASE_IP_PREFIX}.254 (manual setup required)"
 echo ""
 echo "🔑 To access the cluster:"
-echo "ssh ubuntu@10.0.0.240"
+echo "ssh ubuntu@${BASE_IP_PREFIX}.240"
 echo "kubectl get nodes"
 echo ""
-echo "🔧 To add external machine 10.0.0.254:"
+echo "🔧 To add external machine ${BASE_IP_PREFIX}.254:"
 echo "./scripts/setup-external-machine.sh"

@@ -108,3 +108,27 @@ variable "service_subnet" {
   type        = string
   default     = "10.96.0.0/12"
 }
+
+variable "gpu_pci_device" {
+  description = "PCI device ID of NVIDIA GPU to passthrough (e.g., 0000:21:00.0)"
+  type        = string
+  default     = "0000:02:00.0"
+}
+
+variable "gpu_vendor_device_id" {
+  description = "GPU vendor:device ID (e.g., 10de:2584) for hardware mapping"
+  type        = string
+  default     = "10de:2584"
+}
+
+variable "gpu_iommu_group" {
+  description = "IOMMU group number for the GPU mapping"
+  type        = number
+  default     = 49
+}
+
+variable "gpu_subsystem_id" {
+  description = "GPU subsystem vendor:device ID (e.g., 1462:174e). Use lspci -nns -vv 02:00.0 or /sys to obtain"
+  type        = string
+  default     = ""
+}

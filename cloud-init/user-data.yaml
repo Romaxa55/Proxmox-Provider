@@ -5,18 +5,13 @@ users:
   - name: romaxa55
     groups: sudo
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
     lock_passwd: false
     ssh_authorized_keys:
       - ${ssh_public_key}
 
 packages:
   - curl
-  - apt-transport-https
-  - ca-certificates
-  - gnupg
-  - lsb-release
-  - containerd
-  - podman
   - qemu-guest-agent
 
 # Let iptables see bridged traffic
@@ -31,24 +26,60 @@ write_files:
     net.bridge.bridge-nf-call-ip6tables = 1
     net.bridge.bridge-nf-call-iptables = 1
     net.ipv4.ip_forward = 1
-
-- path: /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
-  content: |
-    # Enabling password authentication
-    PasswordAuthentication yes          
+ 
+- path: /usr/local/bin/setup-nvidia.sh
+  permissions: "0755"
+  owner: root:root
+  content: |-
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    NEED_GPU_SETUP=false
+    HOSTNAME_NOW=$(cat /etc/hostname || true)
+    if [[ "$HOSTNAME_NOW" == "k8s-gpu-1" ]]; then
+      NEED_GPU_SETUP=true
+    else
+      command -v lspci >/dev/null 2>&1 || (apt-get update && apt-get install -y pciutils)
+      if lspci -nns | grep -qi "10de:"; then
+        NEED_GPU_SETUP=true
+      fi
+    fi
+    
+    if [[ "$NEED_GPU_SETUP" == true ]]; then
+      # Enable contrib/non-free/non-free-firmware components on Debian 12
+      if grep -qE '^deb .* bookworm .*main' /etc/apt/sources.list; then
+        sed -i 's/ main$/ main contrib non-free non-free-firmware/g' /etc/apt/sources.list || true
+        sed -i 's/ main contrib non-free$/ main contrib non-free non-free-firmware/g' /etc/apt/sources.list || true
+      fi
+      apt-get update
+      # Kernel headers + NVIDIA driver
+      apt-get install -y linux-headers-$(uname -r) firmware-misc-nonfree || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-driver || true
+      
+      # NVIDIA Container Toolkit for containerd (Kubernetes)
+      install -m 0755 -d /usr/share/keyrings
+      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      curl -fsSL https://nvidia.github.io/libnvidia-container/stable/debian12/amd64/nvidia-container-toolkit.list \
+        | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#' \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y nvidia-container-toolkit
+      
+      # Configure containerd runtime
+      if command -v nvidia-ctk >/dev/null 2>&1; then
+        nvidia-ctk runtime configure --runtime=containerd || true
+        systemctl restart containerd || true
+      fi
+      
+      # Verify (optional)
+      command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi || true
+    fi
+    
 
 runcmd:
-- systemctl restart sshd
 - systemctl enable --now qemu-guest-agent
-- sysctl --system
-- echo "About to run dmgw"
-- modprobe br_netfilter # Load br_netfilter module.
-- curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-- echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
-- sudo apt-get update
-- sudo apt-get install -y kubelet kubeadm kubectl
-- sudo apt-mark hold kubelet kubeadm kubectl
-- sudo systemctl enable --now kubelet  
+- [ bash, -lc, /usr/local/bin/setup-nvidia.sh ]
+
 
 scripts-user:
 - /var/lib/cloud/instance/scripts/runcmd
